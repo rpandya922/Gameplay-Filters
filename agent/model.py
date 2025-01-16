@@ -142,6 +142,37 @@ class TwinnedQNetwork(nn.Module):
       q2 = q2.detach().cpu().numpy()
     return q1, q2
 
+class ValueNetwork(nn.Module):
+  def __init__(
+      self, obsrv_dim: int, mlp_dim: List[int], append_dim: int = 0, latent_dim: int = 0,
+      activation_type: str = 'Tanh', device: Union[str, torch.device] = 'cpu', verbose: bool = True
+  ):
+    super(ValueNetwork, self).__init__()
+    if verbose:
+      print("The neural network for CRITIC has architecture as below:")
+    dim_list = [obsrv_dim+append_dim+latent_dim] + mlp_dim + [1]
+    self.V = MLP(dim_list, activation_type, verbose=verbose).to(device)
+
+    if device == torch.device('cuda'):
+      self.V.cuda()
+    self.device = torch.device(device)
+
+  def forward(
+      self,
+      obsrv: Union[np.ndarray, torch.Tensor],
+      append: Optional[Union[np.ndarray, torch.Tensor]] = None,
+      latent: Optional[Union[np.ndarray, torch.Tensor]] = None,
+  ) -> Union[np.ndarray, torch.Tensor]:
+    obsrv, np_input, num_extra_dim = get_mlp_input(obsrv, append=append, latent=latent, device=self.device)
+    v = self.V(obsrv)
+
+    # Restore dimension
+    for _ in range(num_extra_dim):
+      v = v.squeeze(0)
+
+    if np_input:
+      v = v.detach().cpu().numpy()
+    return v
 
 class GaussianPolicy(nn.Module):
 

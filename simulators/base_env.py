@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Tuple, Optional, Union
 import random
 import numpy as np
-import gym
+import gymnasium as gym
 import torch
 
 from .utils import GenericAction, GenericState

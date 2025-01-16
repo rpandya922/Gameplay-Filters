@@ -28,7 +28,7 @@ from .policy.base_policy import BasePolicy
 
 from .utils import (save_obj, load_obj, PrintLogger, parallel_apply, parallel_iapply)
 
-import gym
+import gymnasium as gym
 
 # gym.envs.register(  # no time limit imposed
 #     id='RaceCarSingle5DEnv-v1',
@@ -45,3 +45,4 @@ from .spirit_rl.spirit_pybullet_single import SpiritPybulletSingleEnv
 from .spirit_rl.spirit_pybullet_zs import SpiritPybulletZeroSumEnv
 from .go2_pybullet.go2_pybullet_single import Go2PybulletSingleEnv
 from .go2_pybullet.go2_pybullet_zs import Go2PybulletZeroSumEnv
+from .pendulum.pendulum_zs import PendulumZeroSumEnv

@@ -14,7 +14,7 @@ import numpy as np
 import multiprocessing as mp
 import cloudpickle
 import dill
-import gym
+import gymnasium as gym
 from tqdm import tqdm
 
 from ..policy.base_policy import BasePolicy

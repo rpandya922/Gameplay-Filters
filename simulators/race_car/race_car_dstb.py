@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from matplotlib import pyplot as plt
 import matplotlib
-from gym import spaces
+from gymnasium import spaces
 from jax import numpy as jnp
 
 from .track import Track

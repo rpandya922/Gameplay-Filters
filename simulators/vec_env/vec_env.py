@@ -11,7 +11,7 @@ Modified from stable-baseline3 and https://github.com/allenzren/alano.
 
 from typing import Type, Any, Dict, Optional
 import torch as th
-import gym
+import gymnasium as gym
 from .subproc_vec_env import SubprocVecEnv
 
 

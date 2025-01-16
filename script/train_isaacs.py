@@ -28,12 +28,13 @@ def main(config_file):
   log_path = os.path.join(cfg.solver.out_folder, 'log.txt')
   if os.path.exists(log_path):
     os.remove(log_path)
-  sys.stdout = PrintLogger(log_path)
-  sys.stderr = PrintLogger(log_path)
+  # TODO: add back after PPO implementation is done
+  # sys.stdout = PrintLogger(log_path)
+  # sys.stderr = PrintLogger(log_path)
 
   if cfg.solver.use_wandb:
     import wandb
-    wandb.init(entity='safe-princeton', project=cfg.solver.project_name, name=cfg.solver.name)
+    wandb.init(entity='ravipandya', project=cfg.solver.project_name, name=cfg.solver.name)
     tmp_cfg = {
         'environment': OmegaConf.to_container(cfg.environment),
         'solver': OmegaConf.to_container(cfg.solver),
@@ -55,6 +56,10 @@ def main(config_file):
     import jax
     jax.config.update('jax_platform_name', 'cpu')
     env_class = RaceCarDstb5DEnv
+  elif cfg.agent.dyn == "Pendulum":
+    from simulators import PendulumZeroSumEnv
+    env_class = PendulumZeroSumEnv
+    cfg.cost = None
   else:
     raise ValueError("Dynamics type not supported!")
 

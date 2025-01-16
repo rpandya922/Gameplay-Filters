@@ -5,75 +5,26 @@ environment:
 
 agent:
   agent_id: ego
-  dyn: SpiritPybullet
-  footprint: none
+  dyn: Pendulum
+  footprint: null
   verbose: false
-  gui: false
-  gui_imaginary: false
-  dt: 0.02
-  apply_force: true # warning, currently this will also affect adversarial force
-  replace_adv_with_dr: false # if true, this will replace the adversarial force with dr force
-  force: 50
-  force_scale: 1.0
-  force_reset_time: 50
-  force_info:
-  link_name: 
-  rotate_reset: true
-  height_reset: both
-  force_type: uniform
-  terrain: normal
-  terrain_height: 0.1
-  terrain_gridsize: 0.2
-  terrain_friction: 1.0
+  dt: 0.05
+  max_speed: 8.0
   envtype: normal
+  discretize_actions: false
+  n_discrete_actions: 16
   action_range: 
     ctrl: &ctrl_range
-      - [-0.5, 0.5]
-      - [-0.5, 0.5]
-      - [-0.5, 0.5]
-      - [-0.5, 0.5]
-      - [-0.5, 0.5]
-      - [-0.5, 0.5]
-      - [-0.5, 0.5]
-      - [-0.5, 0.5]
-      - [-0.5, 0.5]
-      - [-0.5, 0.5]
-      - [-0.5, 0.5]
-      - [-0.5, 0.5]
+      - [-2.0, 2.0]
     dstb: &dstb_range
-      - [-1., 1.]
-      - [-1., 1.]
-      - [-1., 1.]
-      - [-0.1, 0.1]
-      - [-0.1, 0.1]
-      - [-0.05, 0.05]
-  action_type: center_sampling
-  action_center:
-    - 0.4
-    - 1.0
-    - 1.9
-    - 0.4
-    - 1.0
-    - 1.9
-    - -0.4
-    - 1.0
-    - 1.9
-    - -0.4
-    - 1.0
-    - 1.9
+      - [-1.0, 1.0]
   target_margin:
-    - corner_height
-    - toe_height
-    - body_ang_x
-    - body_ang_y
-    - body_ang_z
-    - x_dot
-    - y_dot
-    - z_dot
+    - theta
+    - theta_dot
   safety_margin:
-    - corner_height
-    - elbow_height
-  obs_dim: 32
+    - theta
+    - theta_dot
+  obs_dim: 3 # [sin(theta), cos(theta), theta_dot]
   obsrv_list: &obsrv_list
     ctrl: null
     dstb: null
@@ -86,12 +37,12 @@ solver:
   num_actors: 2
   num_critics: 1
   # == hyperparameters of learning ==
-  max_steps: 20_000_000
+  max_steps: 20_000
   opt_period: 10_000
   num_updates_per_opt: 1_000
-  eval_period: 100_000
-  min_steps_b4_opt: 100_000
-  warmup_steps: 500_000
+  eval_period: 10_000
+  min_steps_b4_opt: 10_000
+  warmup_steps: 50_000
   batch_size: 256
   ctrl_update_ratio: 2
   warmup_action_range:
@@ -102,12 +53,12 @@ solver:
   # == logging ==
   use_wandb: false
   project_name: gameplay-release
-  name: isaacs_spirit
+  name: isaacs_pend
   max_model: 20
   save_top_k:
     ctrl: 10
     dstb: 10
-  out_folder: train_result/isaacs_spirit
+  out_folder: train_result/isaacs_pend
   eval:   
     b4_learn: true
     metric: reach-avoid
@@ -115,7 +66,7 @@ solver:
     num_trajectories: 100
     timeout: 300
     end_criterion: reach-avoid
-  obs_dim: 32
+  obs_dim: 3
   obsrv_list:  *obsrv_list
   rollout_end_criterion: reach-avoid
   # == hyperparameters of actors and critics ==
@@ -185,8 +136,8 @@ arch:
     activation: Sin
     append_dim: 0
     latent_dim: 0
-    obsrv_dim: 32
-    action_dim: 12
+    obsrv_dim: 3
+    action_dim: 1
     action_range: *ctrl_range
     pretrained_path:
   actor_1:
@@ -197,8 +148,8 @@ arch:
     activation: Sin
     append_dim: 0
     latent_dim: 0
-    obsrv_dim: 32
-    action_dim: 6
+    obsrv_dim: 3
+    action_dim: 1
     action_range: *dstb_range
     pretrained_path:
   critic_0:
@@ -209,8 +160,8 @@ arch:
     activation: Sin
     append_dim: 0
     latent_dim: 0
-    obsrv_dim: 32
-    action_dim: 18
+    obsrv_dim: 3
+    action_dim: 2
     pretrained_path:
 
 eval:

@@ -156,7 +156,8 @@ class BaseTraining(ABC):
     end_learning = time.time()
     time_learning = end_learning - start_learning
     print('\nLearning: {:.1f}'.format(time_learning))
-    wandb.log({'time_learning': time_learning})
+    if self.use_wandb:
+      wandb.log({'time_learning': time_learning})
 
     # Saves the final actor and critic anyway.
     self.save()

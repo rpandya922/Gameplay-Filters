@@ -1,0 +1,6 @@
+*__pycache__*
+*._DS_Store*
+*.pyc
+isaacs.egg-info/
+wandb/
+train_result/

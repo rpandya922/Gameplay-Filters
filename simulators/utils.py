@@ -9,7 +9,7 @@ from typing import (
     TypeVar, TypedDict, List, Optional, Union, Tuple, Dict, Iterable, Callable
 )
 import numpy as np
-from gym import spaces
+from gymnasium import spaces
 import torch
 import pickle
 from tqdm import tqdm

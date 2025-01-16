@@ -52,6 +52,9 @@ class Agent:
     elif cfg.dyn == "Go2Pybullet":
       from .dynamics.go2_dynamics_pybullet import Go2DynamicsPybullet
       self.dyn = Go2DynamicsPybullet(cfg, action_space)
+    elif cfg.dyn == "Pendulum":
+      from .dynamics.pendulum_dynamics import PendulumDynamics
+      self.dyn = PendulumDynamics(cfg, action_space)
     else:
       raise ValueError("Dynamics type not supported!")
 

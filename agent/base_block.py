@@ -26,7 +26,7 @@ from torch.optim import Adam, AdamW
 from torch.optim.lr_scheduler import StepLR
 from torch.nn.functional import mse_loss
 
-from agent.model import GaussianPolicy, TwinnedQNetwork
+from agent.model import GaussianPolicy, TwinnedQNetwork, ValueNetwork
 from agent.scheduler import StepLRMargin
 from utils.train import soft_update, save_model, get_bellman_update
 from simulators.policy.base_policy import BasePolicy
@@ -309,6 +309,33 @@ class Actor(BaseBlock, BasePolicy):
     else:
       raise ValueError("Not a stochastic policy!")
 
+class PPOActor(Actor):
+  policy_type: str = "NNCS"
+  net: GaussianPolicy  # TODO: different policies, e.g., GMM.
+
+  def evaluate(self):
+    pass
+
+  def update(self, batch, v : torch.Tensor, log_prob: torch.Tensor,
+             n_update_epoch: int) -> Tuple[float]:
+    """Updates actor network with values (policy gradient).
+
+    Args:
+        batch (Batch): _description_
+        v (torch.Tensor): _description_
+        log_prob (torch.Tensor): _description_
+        n_update_epoch (int): _description_
+
+    Returns:
+        Tuple[float]: _description_
+    """
+
+    # save old policy logprobs and compute advantages
+    old_log_probs = log_prob.detach()
+
+    pass
+
+  
 
 class Critic(BaseBlock):
   net: TwinnedQNetwork
@@ -443,3 +470,68 @@ class Critic(BaseBlock):
     if isinstance(value, torch.Tensor):
       value = value.cpu().numpy()
     return value
+  
+class PPOCritic(Critic):
+  net: ValueNetwork
+
+  def build_network(self, cfg, cfg_arch, verbose: bool = True):
+    self.net = ValueNetwork(
+        obsrv_dim=cfg_arch.obsrv_dim, mlp_dim=cfg_arch.mlp_dim, append_dim=cfg_arch.append_dim,
+        latent_dim=cfg_arch.latent_dim, activation_type=cfg_arch.activation, device=self.device, verbose=verbose,
+    )
+
+    # Loads model if specified.
+    if hasattr(cfg_arch, "pretrained_path"):
+      if cfg_arch.pretrained_path is not None:
+        pretrained_path = cfg_arch.pretrained_path
+        self.net.load_state_dict(torch.load(pretrained_path, map_location=self.device))
+        print(f"--> Loads {self.net_name} from {pretrained_path}.")
+
+    if self.eval:
+      self.net.eval()
+      for _, param in self.net.named_parameters():
+        param.requires_grad = False
+      self.target = self.net  # alias
+    else:
+      self.target = copy.deepcopy(self.net)
+      self.build_optimizer(cfg)
+
+  def update(
+      self, v: torch.Tensor, v_nxt: torch.Tensor, non_final_mask: torch.Tensor, 
+      reward: torch.Tensor, g_x: torch.Tensor, l_x: torch.Tensor,
+      binary_cost: torch.Tensor, entropy_motives: torch.Tensor
+  ) -> float:
+    """Updates critic network with next Q values (target).
+
+    Args:
+        v (torch.Tensor):
+        q1_nxt (torch.Tensor):
+        q2_nxt (torch.Tensor):
+        non_final_mask (torch.Tensor):
+        reward (torch.Tensor):
+        g_x (torch.Tensor):
+        l_x (torch.Tensor):
+        binary_cost (torch.Tensor):
+        entropy_motives (torch.Tensor):
+
+    Returns:
+        float: critic loss.
+    """
+
+    # Gets Bellman update.
+    y = get_bellman_update(
+        mode=self.mode, batch_size=v.shape[0], v_nxt=v_nxt, non_final_mask=non_final_mask, reward=reward, 
+        g_x=g_x, l_x=l_x, binary_cost=binary_cost, gamma=self.gamma, terminal_type=self.terminal_type
+    )
+    if self.mode == 'performance':
+      y[non_final_mask] += self.gamma * entropy_motives
+
+    # Regresses MSE loss for V
+    loss_v = mse_loss(input=v.view(-1), target=y)
+
+    # Backpropagates.
+    self.optimizer.zero_grad()
+    loss_v.backward()
+    self.optimizer.step()
+    return loss_v.item()
+      

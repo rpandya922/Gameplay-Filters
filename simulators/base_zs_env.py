@@ -8,7 +8,7 @@ from abc import abstractmethod
 from typing import Any, Tuple, Optional, Callable, List, Dict, Union
 import numpy as np
 import torch
-from gym import spaces
+from gymnasium import spaces
 from tqdm import tqdm
 
 from .agent import Agent

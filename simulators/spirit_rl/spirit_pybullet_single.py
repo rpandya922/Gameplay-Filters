@@ -5,7 +5,7 @@
 # --------------------------------------------------------
 
 from typing import Dict, Tuple, Any, Optional, Union
-from gym import spaces
+from gymnasium import spaces
 import numpy as np
 import torch
 import matplotlib

@@ -7,7 +7,7 @@
 from typing import Dict, Tuple, Any, Optional, Union
 import numpy as np
 import torch
-from gym import spaces
+from gymnasium import spaces
 
 from ..base_zs_env import BaseZeroSumEnv
 from ..utils import ActionZS
