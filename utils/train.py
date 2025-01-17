@@ -62,12 +62,13 @@ def get_bellman_update_ppo(
     reward: torch.Tensor, g_x: torch.Tensor, l_x: torch.Tensor, binary_cost: torch.Tensor, gamma: float,
     terminal_type: Optional[str] = None
 ):
+  target_v = v_nxt.view(-1)
   y = torch.zeros(batch_size).float().to(v_nxt)  # placeholder
   final_mask = torch.logical_not(non_final_mask)
   if mode == 'reach-avoid':
     # V(s) = min{ g(s), max{ l(s), V(s') }}
     terminal_target = torch.min(l_x[non_final_mask], g_x[non_final_mask])
-    original_target = torch.min(g_x[non_final_mask], torch.max(l_x[non_final_mask], v_nxt))
+    original_target = torch.min(g_x[non_final_mask], torch.max(l_x[non_final_mask], target_v))
     y[non_final_mask] = (1.0-gamma) * terminal_target + gamma*original_target
 
     if terminal_type == 'g':
@@ -78,16 +79,16 @@ def get_bellman_update_ppo(
       raise ValueError("invalid terminal type")
   elif mode == 'safety':
     # V(s) = min{ g(s), V(s') }
-    y[non_final_mask] = ((1.0-gamma) * g_x[non_final_mask] + gamma * torch.min(g_x[non_final_mask], v_nxt))
+    y[non_final_mask] = ((1.0-gamma) * g_x[non_final_mask] + gamma * torch.min(g_x[non_final_mask], target_v))
 
     # terminal state
     y[final_mask] = g_x[final_mask]
   elif mode == 'performance':
     y = reward
-    y[non_final_mask] += gamma * v_nxt
+    y[non_final_mask] += gamma * target_v
   elif mode == 'risk':
     y = binary_cost  # y = 1 if it's a terminal state
-    y[non_final_mask] += gamma * v_nxt
+    y[non_final_mask] += gamma * target_v
   return y
 
 def soft_update(target, source, tau):

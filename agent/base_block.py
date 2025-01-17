@@ -28,7 +28,7 @@ from torch.nn.functional import mse_loss
 
 from agent.model import GaussianPolicy, TwinnedQNetwork, ValueNetwork
 from agent.scheduler import StepLRMargin
-from utils.train import soft_update, save_model, get_bellman_update
+from utils.train import soft_update, save_model, get_bellman_update, get_bellman_update_ppo
 from simulators.policy.base_policy import BasePolicy
 
 
@@ -36,17 +36,29 @@ def build_network(cfg, cfg_arch, device: torch.device,
                   verbose: bool = True) -> Tuple[Dict[str, Critic], Dict[str, Actor]]:
   critics: Dict[str, Critic] = {}
   actors: Dict[str, Actor] = {}
+  algorithm = "SAC" 
+  if hasattr(cfg, "algorithm"):
+    algorithm = str(cfg.algorithm)
+  if algorithm == "SAC":
+    critic_class = Critic
+    actor_class = Actor
+  elif algorithm == "PPO":
+    critic_class = PPOCritic
+    actor_class = PPOActor
+  else:
+    raise ValueError("Unsupported algorithm type!")
+
   for idx in range(cfg.num_critics):
     cfg_critic = getattr(cfg, f"critic_{idx}")
     cfg_arch_critic = getattr(cfg_arch, f"critic_{idx}")
-    critic = Critic(cfg=cfg_critic, cfg_arch=cfg_arch_critic, verbose=verbose, device=device)
+    critic = critic_class(cfg=cfg_critic, cfg_arch=cfg_arch_critic, verbose=verbose, device=device)
     critics[cfg_critic.net_name] = critic
   assert "central" in critics, "Must have a central critic."
 
   for idx in range(cfg.num_actors):
     cfg_actor = getattr(cfg, f"actor_{idx}")
     cfg_arch_actor = getattr(cfg_arch, f"actor_{idx}")
-    actor = Actor(cfg=cfg_actor, cfg_arch=cfg_arch_actor, verbose=verbose, device=device)
+    actor = actor_class(cfg=cfg_actor, cfg_arch=cfg_arch_actor, verbose=verbose, device=device)
     actors[cfg_actor.net_name] = actor
   return critics, actors
 
@@ -316,24 +328,40 @@ class PPOActor(Actor):
   def evaluate(self):
     pass
 
-  def update(self, batch, v : torch.Tensor, log_prob: torch.Tensor,
-             n_update_epoch: int) -> Tuple[float]:
+  def update(self, v : torch.Tensor, log_prob: torch.Tensor, n_update_epoch: int,
+              obsrv: torch.Tensor, actions: torch.Tensor, g_x: torch.Tensor, l_x: torch.Tensor,
+              gamma: float, gae_lam: float
+             ) -> Tuple[float]:
     """Updates actor network with values (policy gradient).
 
     Args:
-        batch (Batch): _description_
         v (torch.Tensor): _description_
         log_prob (torch.Tensor): _description_
         n_update_epoch (int): _description_
+        obsrv (torch.Tensor): _description_
+        actions (torch.Tensor): _description_
+        rewards (torch.Tensor): _description
 
     Returns:
         Tuple[float]: _description_
     """
+    buffer_size = obsrv.shape[0]
 
-    # save old policy logprobs and compute advantages
+    # save old policy data
+    old_states = obsrv.detach()
+    old_actions = actions.detach()
     old_log_probs = log_prob.detach()
+    old_values = v.detach()
 
-    pass
+    # compute advantages
+    rewards = torch.min(g_x, l_x)
+    advantages = torch.zeros_like(rewards).to(rewards)
+
+    # compute advantages using generalized advantage estimation (GAE)
+    for i in range(buffer_size, -1, -1):
+      pass
+
+    import ipdb; ipdb.set_trace()
 
   
 
@@ -491,9 +519,7 @@ class PPOCritic(Critic):
       self.net.eval()
       for _, param in self.net.named_parameters():
         param.requires_grad = False
-      self.target = self.net  # alias
     else:
-      self.target = copy.deepcopy(self.net)
       self.build_optimizer(cfg)
 
   def update(
@@ -501,7 +527,7 @@ class PPOCritic(Critic):
       reward: torch.Tensor, g_x: torch.Tensor, l_x: torch.Tensor,
       binary_cost: torch.Tensor, entropy_motives: torch.Tensor
   ) -> float:
-    """Updates critic network with next Q values (target).
+    """Updates critic network with next V values (target).
 
     Args:
         v (torch.Tensor):
@@ -519,7 +545,7 @@ class PPOCritic(Critic):
     """
 
     # Gets Bellman update.
-    y = get_bellman_update(
+    y = get_bellman_update_ppo(
         mode=self.mode, batch_size=v.shape[0], v_nxt=v_nxt, non_final_mask=non_final_mask, reward=reward, 
         g_x=g_x, l_x=l_x, binary_cost=binary_cost, gamma=self.gamma, terminal_type=self.terminal_type
     )

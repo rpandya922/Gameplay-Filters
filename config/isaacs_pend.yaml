@@ -31,6 +31,11 @@ agent:
   reset_criterion: failure
 
 solver:
+  algorithm: PPO
+  # == PPO hyperparameters ==
+  n_update_epoch: 10
+  gae_lam: 0.95
+  # == end of PPO hyperparameters ==
   device: cpu
   rollout_env_device: cpu
   num_envs: 1
