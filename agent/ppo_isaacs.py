@@ -78,6 +78,8 @@ class PPOISAACS(BaseTraining):
     # PPO hyperparameters
     self.n_update_epoch = int(cfg_solver.n_update_epoch)
     self.gae_lam = float(cfg_solver.gae_lam) # GAE lambda
+    self.eps_clip = float(cfg_solver.eps_clip) # PPO clip parameter for actor loss
+    self.entropy_coef = float(cfg_solver.entropy_coef) # entropy coefficient for actor loss
 
     # Copy ckpts from previous stages.
     if cfg_arch.actor_0.pretrained_path is not None:
@@ -236,62 +238,70 @@ class PPOISAACS(BaseTraining):
     )
 
     # Updates the ctrl actor.
-    # if update_ctrl and timer % self.ctrl.update_period == 0:
-    if True: # TODO: remove after implementing ctrl/dstb updates
-      if self.cnt_step < self.warmup_steps:
-        update_alpha = False
-      else:
-        update_alpha = True
+    if update_ctrl and timer % self.ctrl.update_period == 0:
+    # if True: # TODO: remove after implementing ctrl/dstb updates
+      # if self.cnt_step < self.warmup_steps:
+      #   update_alpha = False
+      # else:
+      #   update_alpha = True
       self.ctrl.net.train()
       self.dstb.net.eval()
       self.critic.net.eval()
-      ctrl_action_sample, log_prob = self.ctrl.sample(obsrv=batch.obsrv)
-      with torch.no_grad():
-        if self.dstb.obsrv_list is None:
-          dstb_action_aux = self.dstb.net(batch.obsrv)
-        else:
-          dstb_action_aux = self.dstb.net(batch.obsrv, action=ctrl_action_sample)
-      action_sample = self.combine_action(ctrl_action_sample, dstb_action_aux)
-
-      loss_ctrl = self.ctrl.update(
+      # ctrl_action_sample, log_prob = self.ctrl.sample(obsrv=batch.obsrv)
+      # with torch.no_grad():
+      #   if self.dstb.obsrv_list is None:
+      #     dstb_action_aux = self.dstb.net(batch.obsrv)
+      #   else:
+      #     dstb_action_aux = self.dstb.net(batch.obsrv, action=ctrl_action_sample)
+      # action_sample = self.combine_action(ctrl_action_sample, dstb_action_aux)
+      log_prob, _ = self.ctrl.net.evaluate(batch.obsrv, ctrl_action)
+      loss_ctrl, loss_ent_ctrl = self.ctrl.update(
         v=v, log_prob=log_prob, n_update_epoch=self.n_update_epoch, obsrv=batch.obsrv,
         actions=ctrl_action, g_x=batch.info['g_x'], l_x=batch.info['l_x'], gamma=self.critic.gamma,
-        gae_lam=self.gae_lam
+        gae_lam=self.gae_lam, non_final_mask=batch.non_final_mask, eps_clip=self.eps_clip,
+        entropy_coef=self.entropy_coef
       )
-
-      # q1_sample, q2_sample = self.critic.net(batch.obsrv, action_sample)
-      # loss_ctrl, loss_ent_ctrl, loss_alpha_ctrl = self.ctrl.update(
-      #     q1=q1_sample, q2=q2_sample, log_prob=log_prob, update_alpha=update_alpha
-      # )
+      loss_alpha_ctrl = 0.
     else:
       loss_ctrl = loss_ent_ctrl = loss_alpha_ctrl = 0.
 
     # Updates the dstb actor.
     if update_dstb and timer % self.dstb.update_period == 0:
-      if self.cnt_step < self.warmup_steps:
-        update_alpha = False
-      else:
-        update_alpha = True
+      # if self.cnt_step < self.warmup_steps:
+      #   update_alpha = False
+      # else:
+      #   update_alpha = True
       self.dstb.net.train()
       self.ctrl.net.eval()
       self.critic.net.eval()
-      with torch.no_grad():
-        ctrl_action_aux = self.ctrl.net(batch.obsrv)
-      if self.dstb.obsrv_list is None:
-        dstb_action_sample, log_prob = self.dstb.net.sample(obsrv=batch.obsrv)
-      else:
-        dstb_action_sample, log_prob = self.dstb.net.sample(obsrv=batch.obsrv, action=ctrl_action_aux)
-      action_sample = self.combine_action(ctrl_action_aux, dstb_action_sample)
+      # with torch.no_grad():
+      #   ctrl_action_aux = self.ctrl.net(batch.obsrv)
+      # if self.dstb.obsrv_list is None:
+      #   dstb_action_sample, log_prob = self.dstb.net.sample(obsrv=batch.obsrv)
+      # else:
+      #   dstb_action_sample, log_prob = self.dstb.net.sample(obsrv=batch.obsrv, action=ctrl_action_aux)
+      # action_sample = self.combine_action(ctrl_action_aux, dstb_action_sample)
 
-      q1_sample, q2_sample = self.critic.net(batch.obsrv, action_sample)
-      loss_dstb, loss_ent_dstb, loss_alpha_dstb = self.dstb.update(
-          q1=q1_sample, q2=q2_sample, log_prob=log_prob, update_alpha=update_alpha
-      )
+      # q1_sample, q2_sample = self.critic.net(batch.obsrv, action_sample)
+      # loss_dstb, loss_ent_dstb, loss_alpha_dstb = self.dstb.update(
+      #     q1=q1_sample, q2=q2_sample, log_prob=log_prob, update_alpha=update_alpha
+      # )
+      log_prob, _ = self.dstb.net.evaluate(batch.obsrv, ctrl_action)
+      try:
+        loss_dstb, loss_ent_dstb = self.dstb.update(
+            v=v, log_prob=log_prob, n_update_epoch=self.n_update_epoch, obsrv=batch.obsrv,
+            actions=dstb_action, g_x=batch.info['g_x'], l_x=batch.info['l_x'], gamma=self.critic.gamma,
+            gae_lam=self.gae_lam, non_final_mask=batch.non_final_mask, eps_clip=self.eps_clip,
+            entropy_coef=self.entropy_coef
+        )
+      except:
+        import ipdb; ipdb.set_trace()
+      loss_alpha_dstb = 0.
     else:
       loss_dstb = loss_ent_dstb = loss_alpha_dstb = 0.
 
-    if timer % self.critic.update_target_period == 0:  # Updates the target networks.
-      self.critic.update_target()
+    # if timer % self.critic.update_target_period == 0:  # Updates the target networks.
+    #   self.critic.update_target()
 
     self.critic.net.eval()
     self.ctrl.net.eval()
@@ -317,17 +327,19 @@ class PPOISAACS(BaseTraining):
       loss_alpha_dstb_all = []
 
       for timer in range(self.num_updates_per_opt):
-        sample = True
-        cnt = 0
-        while sample:
-          batch = self.sample_batch()
-          sample = torch.logical_not(torch.any(batch.non_final_mask))
-          cnt += 1
-          if cnt >= 10:
-            break
-        if sample:
-          warnings.warn("Cannot get a valid batch!!", UserWarning)
-          continue
+        # sample = True
+        # cnt = 0
+        # while sample:
+        #   batch = self.sample_batch()
+        #   sample = torch.logical_not(torch.any(batch.non_final_mask))
+        #   cnt += 1
+        #   if cnt >= 10:
+        #     break
+        # if sample:
+        #   warnings.warn("Cannot get a valid batch!!", UserWarning)
+        #   continue
+        # TODO: pass full memory into update, minibatches sampled inside update fns.
+        batch = self.memory.memory 
 
         loss_q, loss_ctrl, loss_ent_ctrl, loss_alpha_ctrl, loss_dstb, loss_ent_dstb, loss_alpha_dstb = self.update_one(
             batch, timer, update_ctrl=update_ctrl

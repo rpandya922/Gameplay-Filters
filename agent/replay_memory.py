@@ -79,3 +79,16 @@ class ReplayMemory(object):
 
   def __len__(self):
     return len(self.memory)
+  
+def RolloutMemory(object):
+
+  def __init__(self, capacity, seed, n_envs=1):
+    self.reset(capacity)
+    self.capacity = capacity
+    self.seed = seed
+    self.rng = np.random.default_rng(seed=self.seed)
+
+  def reset(self, capacity):
+    if capacity is None:
+      capacity = self.capacity
+    self.memory = deque(maxlen=capacity)

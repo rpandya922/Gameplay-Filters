@@ -230,6 +230,44 @@ class GaussianPolicy(nn.Module):
 
     return output
 
+  def evaluate(
+      self,
+      obsrv: Union[np.ndarray, torch.Tensor],
+      action_eval: Union[np.ndarray, torch.Tensor],
+      action: Optional[Union[np.ndarray, torch.Tensor]] = None,
+      append: Optional[Union[np.ndarray, torch.Tensor]] = None,
+      latent: Optional[Union[np.ndarray, torch.Tensor]] = None,
+  ) -> Tuple[Union[np.ndarray, torch.Tensor], Union[np.ndarray, torch.Tensor]]:
+    # `action` is a placeholder to consider other agents' actions, e.g., dstb might use ctrl.
+    obsrv, np_input, num_extra_dim = get_mlp_input(
+        obsrv, action=action, append=append, latent=latent, device=self.device
+    )
+    mean = self.mean(obsrv)
+    log_std = self.log_std(obsrv)
+    log_std = torch.clamp(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
+
+    std = torch.exp(log_std)
+    normalRV = Normal(mean, std)
+
+    x = (action_eval - self.bias) / self.scale
+
+    log_prob = normalRV.log_prob(x)
+    if log_prob.dim() > 1:
+      log_prob = log_prob.sum(1, keepdim=True)
+    else:
+      log_prob = log_prob.sum()
+
+    # Restore dimension
+    for _ in range(num_extra_dim):
+      action_eval = action_eval.squeeze(0)
+      log_prob = log_prob.squeeze(0)
+
+    if np_input:
+      action_eval = action_eval.detach().cpu().numpy()
+      log_prob = log_prob.detach().cpu().numpy()
+
+    return log_prob, normalRV.entropy()
+
   def sample(
       self,
       obsrv: Union[np.ndarray, torch.Tensor],

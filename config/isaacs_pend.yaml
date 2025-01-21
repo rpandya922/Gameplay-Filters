@@ -35,6 +35,8 @@ solver:
   # == PPO hyperparameters ==
   n_update_epoch: 10
   gae_lam: 0.95
+  eps_clip: 0.2
+  entropy_coef: 0.05
   # == end of PPO hyperparameters ==
   device: cpu
   rollout_env_device: cpu
@@ -53,7 +55,7 @@ solver:
   warmup_action_range:
     ctrl: *ctrl_range
     dstb: *dstb_range
-  memory_capacity: 1_000_000
+  memory_capacity: 2048
   softmax_rationality: 3.0
   # == logging ==
   use_wandb: false

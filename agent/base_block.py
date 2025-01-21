@@ -330,7 +330,8 @@ class PPOActor(Actor):
 
   def update(self, v : torch.Tensor, log_prob: torch.Tensor, n_update_epoch: int,
               obsrv: torch.Tensor, actions: torch.Tensor, g_x: torch.Tensor, l_x: torch.Tensor,
-              gamma: float, gae_lam: float
+              gamma: float, gae_lam: float, non_final_mask: torch.Tensor, eps_clip: float,
+              entropy_coef: float
              ) -> Tuple[float]:
     """Updates actor network with values (policy gradient).
 
@@ -345,24 +346,79 @@ class PPOActor(Actor):
     Returns:
         Tuple[float]: _description_
     """
-    buffer_size = obsrv.shape[0]
+    buffer_size = obsrv.shape[0]-1
 
     # save old policy data
-    old_states = obsrv.detach()
+    old_obsrv = obsrv.detach()
     old_actions = actions.detach()
     old_log_probs = log_prob.detach()
     old_values = v.detach()
 
     # compute advantages
     rewards = torch.min(g_x, l_x)
+    # compute advantages
+    if self.actor_type == "min":
+      pass
+    elif self.actor_type == "max":
+      rewards = -rewards
+      v = -v
+    
     advantages = torch.zeros_like(rewards).to(rewards)
 
-    # compute advantages using generalized advantage estimation (GAE)
-    for i in range(buffer_size, -1, -1):
-      pass
+    # # compute advantages using generalized advantage estimation (GAE)
+    # last_adv = 0
+    # # TODO: do we need one extra value for the last state so we can compute the last advantage properly?
+    # last_value = old_values[-1]
+    # for i in range(buffer_size, -1, -1):
+    #   mask = non_final_mask[i].logical_not()
+    #   last_value = last_value * mask
+    #   last_adv = last_adv * mask
 
-    import ipdb; ipdb.set_trace()
+    #   delta = rewards[i] + gamma*last_value - old_values[i]
+    #   last_adv = delta + gamma*gae_lam*last_adv
+    #   advantages[i] = last_adv
+    #   last_value = old_values[i]
 
+    advantages = rewards.detach() - old_values
+
+    # normalize advantages
+    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+    advantages = torch.unsqueeze(advantages, 1)
+
+    # run PPO update for n_update_epoch steps
+    for epoch in range(n_update_epoch):
+      # evaluate old actions with current updated policy
+      log_probs, dist_entropy = self.net.evaluate(old_obsrv, old_actions)
+
+      # ratios of new and old policies
+      ratios = torch.exp(log_probs - old_log_probs)
+      
+      # TODO: include other loss terms (particularly KL loss with discrete actions)
+
+      loss1 = ratios * advantages
+      # clipped surrogate loss
+      loss2 = torch.clamp(ratios, 1.0 - eps_clip, 1.0 + eps_clip) * advantages
+
+      loss_clip = -torch.min(loss1, loss2)
+
+      # compute entropy bonus term
+      entropy_bonus = -entropy_coef*dist_entropy
+
+      loss_clip_ = loss_clip.mean().item()
+      print(f"{self.actor_type} epoch {epoch}: {loss_clip.mean().item()}, {entropy_bonus.mean().item()}")
+      if loss_clip_ == float('inf') or loss_clip_ == float('-inf') or loss_clip_ == float('nan'):
+        import ipdb; ipdb.set_trace()
+      loss = loss_clip + entropy_bonus
+      loss = loss.mean()
+      # import ipdb; ipdb.set_trace()
+      # take gradient step
+      self.optimizer.zero_grad()
+      loss.backward()
+      # clip gradients
+      torch.nn.utils.clip_grad_norm_(self.net.parameters(), 0.5)
+      self.optimizer.step()
+
+    return loss.item(), dist_entropy.mean().item()
   
 
 class Critic(BaseBlock):
