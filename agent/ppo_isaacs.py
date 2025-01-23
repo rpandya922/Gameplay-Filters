@@ -22,6 +22,7 @@ import torch
 import numpy as np
 import wandb
 
+from agent.replay_memory import RolloutMemory
 from agent.base_training import BaseTraining
 from agent.replay_memory import Batch
 from agent.base_block import PPOActor
@@ -163,6 +164,39 @@ class PPOISAACS(BaseTraining):
 
     return action_all
 
+  def build_memory(self, capacity: int, seed: int):
+    self.memory = RolloutMemory(capacity, seed, n_envs=self.num_envs)
+
+  def store_transition(self, env_idx, *args):
+    self.memory.update(env_idx, self.transition_cls(*args))
+
+  def compute_advantages(self, batch, buffer_size: int, values: torch.Tensor, gamma: float, gae_lam: float):
+    # compute advantages and modify batch in-place
+    # save old policy data
+    # old_obsrv = batch.obsrv.detach()
+    # old_actions = batch.actions.detach()
+    old_values = values.detach()
+    g_x = batch.info['g_x']
+    l_x = batch.info['l_x']
+    non_final_mask = batch.non_final_mask
+    rewards = torch.min(g_x, l_x)
+
+    advantages = torch.zeros_like(rewards).to(rewards)
+    last_adv = 0
+    # TODO: do we need one extra value for the last state so we can compute the last advantage properly?
+    last_value = old_values[buffer_size]
+    for i in range(buffer_size, -1, -1):
+      mask = non_final_mask[i].logical_not()
+      last_value = last_value * mask
+      last_adv = last_adv * mask
+
+      delta = rewards[i] + gamma*last_value - old_values[i]
+      last_adv = delta + gamma*gae_lam*last_adv
+      advantages[i] = last_adv
+      last_value = old_values[i]
+    
+    return advantages
+
   def interact(
       self, rollout_env: Union[BaseZeroSumEnv, VecEnvBase], obsrv_all: torch.Tensor, action_all: List[Dict[str,
                                                                                                            np.ndarray]]
@@ -182,7 +216,7 @@ class PPOISAACS(BaseTraining):
       # Stores the transition in memory. Note that `obsrv` and `action` are cpu tensors.
       action = {k: torch.FloatTensor(v[None]) for k, v in action_all[env_idx].items()}
       self.store_transition(
-          obsrv_all[[env_idx]].cpu(), action, r_all[env_idx], obsrv_nxt_all[[env_idx]].cpu(), done, info
+          env_idx, obsrv_all[[env_idx]].cpu(), action, r_all[env_idx], obsrv_nxt_all[[env_idx]].cpu(), done, info
       )
 
       if done:
@@ -206,20 +240,32 @@ class PPOISAACS(BaseTraining):
     self.cnt_eval_period += self.num_envs
     return obsrv_nxt_all
 
-  def update_one(self, batch: Batch, timer: int, update_ctrl: bool,
+  def update_one(self, memory: RolloutMemory, timer: int, update_ctrl: bool,
                  update_dstb: bool = True) -> Tuple[float, float, float, float, float, float, float]:
     """Updates the critic and actor networks with one batch.
 
     Args:
-        batch (Batch): a batch of transitions.
+        memory (RolloutMemory): all transitions.
     """
-    ctrl_action = batch.action['ctrl']
-    dstb_action = batch.action['dstb']
 
     # Updates the critic.
     self.critic.net.train()
     self.ctrl.net.eval()
     self.dstb.net.eval()
+
+    # process memory and compute advantages for each env
+    batches = [Batch(memory.memory[env_idx], device=self.device) for env_idx in range(self.num_envs)]
+    values = [self.critic.net(batch.obsrv) for batch in batches]
+    for env_idx in range(self.num_envs):
+      b = batches[env_idx]
+      b.info["adv"] = self.compute_advantages(
+        b, memory.first_done_idx[env_idx], values[env_idx], self.critic.gamma, self.gae_lam
+      )
+    # merge all batches now that advantages are computed
+    batch = Batch.concat(batches, memory.first_done_idx)
+
+    ctrl_action = batch.action['ctrl']
+    dstb_action = batch.action['dstb']
 
     # with torch.no_grad():
     #   ctrl_action_nxt, _ = self.ctrl.sample(batch.non_final_obsrv_nxt)
@@ -229,8 +275,9 @@ class PPOISAACS(BaseTraining):
     # action = self.combine_action(ctrl_action, dstb_action)
     # action_nxt = self.combine_action(ctrl_action_nxt, dstb_action_nxt)
 
+    # TODO: decide how to properly compute advantages. maybe the easiest is to append all env batches on new dimension, compute advantages per dimension, then flatten them 
     v = self.critic.net(batch.obsrv)  # Gets V(s)
-    v_nxt = self.critic.net(batch.non_final_obsrv_nxt)  # Gets V(s')
+    v_nxt = self.critic.net(batch.non_final_obsrv_nxt)  # Gets V(s') 
     # TODO: what is the correct usage of entropy motives in zero-sum games?
     loss_v = self.critic.update(
       v=v, v_nxt=v_nxt, non_final_mask=batch.non_final_mask, reward=batch.reward, g_x=batch.info['g_x'],
@@ -256,7 +303,7 @@ class PPOISAACS(BaseTraining):
       # action_sample = self.combine_action(ctrl_action_sample, dstb_action_aux)
       log_prob, _ = self.ctrl.net.evaluate(batch.obsrv, ctrl_action)
       loss_ctrl, loss_ent_ctrl = self.ctrl.update(
-        v=v, log_prob=log_prob, n_update_epoch=self.n_update_epoch, obsrv=batch.obsrv,
+        v=v, advantages=batch.info['adv'], log_prob=log_prob, n_update_epoch=self.n_update_epoch, obsrv=batch.obsrv,
         actions=ctrl_action, g_x=batch.info['g_x'], l_x=batch.info['l_x'], gamma=self.critic.gamma,
         gae_lam=self.gae_lam, non_final_mask=batch.non_final_mask, eps_clip=self.eps_clip,
         entropy_coef=self.entropy_coef
@@ -289,7 +336,7 @@ class PPOISAACS(BaseTraining):
       log_prob, _ = self.dstb.net.evaluate(batch.obsrv, ctrl_action)
       try:
         loss_dstb, loss_ent_dstb = self.dstb.update(
-            v=v, log_prob=log_prob, n_update_epoch=self.n_update_epoch, obsrv=batch.obsrv,
+            v=v, advantages=batch.info['adv'], log_prob=log_prob, n_update_epoch=self.n_update_epoch, obsrv=batch.obsrv,
             actions=dstb_action, g_x=batch.info['g_x'], l_x=batch.info['l_x'], gamma=self.critic.gamma,
             gae_lam=self.gae_lam, non_final_mask=batch.non_final_mask, eps_clip=self.eps_clip,
             entropy_coef=self.entropy_coef
@@ -339,7 +386,7 @@ class PPOISAACS(BaseTraining):
         #   warnings.warn("Cannot get a valid batch!!", UserWarning)
         #   continue
         # TODO: pass full memory into update, minibatches sampled inside update fns.
-        batch = self.memory.memory 
+        batch = self.memory 
 
         loss_q, loss_ctrl, loss_ent_ctrl, loss_alpha_ctrl, loss_dstb, loss_ent_dstb, loss_alpha_dstb = self.update_one(
             batch, timer, update_ctrl=update_ctrl

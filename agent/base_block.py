@@ -328,7 +328,7 @@ class PPOActor(Actor):
   def evaluate(self):
     pass
 
-  def update(self, v : torch.Tensor, log_prob: torch.Tensor, n_update_epoch: int,
+  def update(self, v : torch.Tensor, advantages: torch.Tensor, log_prob: torch.Tensor, n_update_epoch: int,
               obsrv: torch.Tensor, actions: torch.Tensor, g_x: torch.Tensor, l_x: torch.Tensor,
               gamma: float, gae_lam: float, non_final_mask: torch.Tensor, eps_clip: float,
               entropy_coef: float
@@ -354,37 +354,16 @@ class PPOActor(Actor):
     old_log_probs = log_prob.detach()
     old_values = v.detach()
 
-    # compute advantages
-    rewards = torch.min(g_x, l_x)
-    # compute advantages
     if self.actor_type == "min":
       pass
     elif self.actor_type == "max":
-      rewards = -rewards
-      v = -v
-    
-    advantages = torch.zeros_like(rewards).to(rewards)
-
-    # # compute advantages using generalized advantage estimation (GAE)
-    # last_adv = 0
-    # # TODO: do we need one extra value for the last state so we can compute the last advantage properly?
-    # last_value = old_values[-1]
-    # for i in range(buffer_size, -1, -1):
-    #   mask = non_final_mask[i].logical_not()
-    #   last_value = last_value * mask
-    #   last_adv = last_adv * mask
-
-    #   delta = rewards[i] + gamma*last_value - old_values[i]
-    #   last_adv = delta + gamma*gae_lam*last_adv
-    #   advantages[i] = last_adv
-    #   last_value = old_values[i]
-
-    advantages = rewards.detach() - old_values
+      advantages = -advantages
 
     # normalize advantages
     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
     advantages = torch.unsqueeze(advantages, 1)
 
+    # TODO: sample minibatches here instead of doing full batch updates
     # run PPO update for n_update_epoch steps
     for epoch in range(n_update_epoch):
       # evaluate old actions with current updated policy

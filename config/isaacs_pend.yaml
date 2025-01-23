@@ -43,6 +43,7 @@ solver:
   num_envs: 1
   num_actors: 2
   num_critics: 1
+  rollout_horizon: 128
   # == hyperparameters of learning ==
   max_steps: 20_000
   opt_period: 10_000
