@@ -363,6 +363,8 @@ class PPOActor(Actor):
     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
     advantages = torch.unsqueeze(advantages, 1)
 
+    import ipdb; ipdb.set_trace()
+
     # TODO: sample minibatches here instead of doing full batch updates
     # run PPO update for n_update_epoch steps
     for epoch in range(n_update_epoch):

@@ -81,6 +81,7 @@ class PPOISAACS(BaseTraining):
     self.gae_lam = float(cfg_solver.gae_lam) # GAE lambda
     self.eps_clip = float(cfg_solver.eps_clip) # PPO clip parameter for actor loss
     self.entropy_coef = float(cfg_solver.entropy_coef) # entropy coefficient for actor loss
+    self.obsrv_dim = int(cfg_solver.obs_dim)
 
     # Copy ckpts from previous stages.
     if cfg_arch.actor_0.pretrained_path is not None:
@@ -165,7 +166,13 @@ class PPOISAACS(BaseTraining):
     return action_all
 
   def build_memory(self, capacity: int, seed: int):
-    self.memory = RolloutMemory(capacity, seed, n_envs=self.num_envs)
+    actor_keys = []
+    actor_dims = []
+    for k, v in self.actors.items():
+      actor_keys.append(k)
+      actor_dims.append(v.action_dim)
+    obsrv_dim = int(self.cfg_solver.obs_dim)
+    self.memory = RolloutMemory(capacity, seed, n_envs=self.num_envs, obsrv_dim=obsrv_dim, action_keys=actor_keys, action_dims=actor_dims)
 
   def store_transition(self, env_idx, *args):
     self.memory.update(env_idx, self.transition_cls(*args))
@@ -253,6 +260,11 @@ class PPOISAACS(BaseTraining):
     self.ctrl.net.eval()
     self.dstb.net.eval()
 
+    b_obsrv, b_action, b_reward, b_obsrv_nxt, b_done, b_action, b_info = memory.process_data(self.device)
+    values = self.critic.net(b_obsrv)
+    # TODO: write a new compute_advantages function that can handle data not from batch object
+    import ipdb; ipdb.set_trace()
+
     # process memory and compute advantages for each env
     batches = [Batch(memory.memory[env_idx], device=self.device) for env_idx in range(self.num_envs)]
     values = [self.critic.net(batch.obsrv) for batch in batches]
@@ -277,6 +289,7 @@ class PPOISAACS(BaseTraining):
 
     # TODO: decide how to properly compute advantages. maybe the easiest is to append all env batches on new dimension, compute advantages per dimension, then flatten them 
     v = self.critic.net(batch.obsrv)  # Gets V(s)
+    # TODO: find out why batch.non_final_obsrv_nxt is not the right shape after using rollout memory
     v_nxt = self.critic.net(batch.non_final_obsrv_nxt)  # Gets V(s') 
     # TODO: what is the correct usage of entropy motives in zero-sum games?
     loss_v = self.critic.update(
@@ -385,12 +398,15 @@ class PPOISAACS(BaseTraining):
         # if sample:
         #   warnings.warn("Cannot get a valid batch!!", UserWarning)
         #   continue
-        # TODO: pass full memory into update, minibatches sampled inside update fns.
+        # pass full memory into update, minibatches sampled inside update fns.
         batch = self.memory 
 
         loss_q, loss_ctrl, loss_ent_ctrl, loss_alpha_ctrl, loss_dstb, loss_ent_dstb, loss_alpha_dstb = self.update_one(
             batch, timer, update_ctrl=update_ctrl
         )
+        # flush memory after updating
+        self.memory.reset(None)
+
         loss_q_all.append(loss_q)
         if update_ctrl and timer % self.ctrl.update_period == 0:
           loss_ctrl_all.append(loss_ctrl)

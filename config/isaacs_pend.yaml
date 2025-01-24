@@ -46,8 +46,8 @@ solver:
   rollout_horizon: 128
   # == hyperparameters of learning ==
   max_steps: 20_000
-  opt_period: 10_000
-  num_updates_per_opt: 1_000
+  opt_period: 2048
+  num_updates_per_opt: 1 # 1_000
   eval_period: 10_000
   min_steps_b4_opt: 10_000
   warmup_steps: 50_000

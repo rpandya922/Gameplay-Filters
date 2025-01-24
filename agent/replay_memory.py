@@ -54,6 +54,7 @@ class Batch(object):
   def concat(batches: List['Batch'], first_done_idxs: List[int]):
     # concatenates all batches (reward, done, obsrv, action, info) into one (but only up to the first done index per batch)
     # `first_done_idxs` is a list of the first done index for each batch.
+    first_done_idxs = [x+1 if x != -1 else x for x in first_done_idxs]
     b0 = batches[0]
     b0.reward = th.cat([b.reward[:first_done_idx] for b, first_done_idx in zip(batches, first_done_idxs)])
     b0.non_final_mask = th.cat([b.non_final_mask[:first_done_idx] for b, first_done_idx in zip(batches, first_done_idxs)])
@@ -94,35 +95,98 @@ class ReplayMemory(object):
     return len(self.memory)
 
 
+# class RolloutMemory2(object):
+#   def __init__(self, capacity, seed, n_envs=1):
+#     capacity_per_env = capacity // n_envs
+#     self.capacity = capacity
+#     self.capacity_per_env = capacity_per_env
+#     self.seed = seed
+#     self.rng = np.random.default_rng(seed=self.seed)
+#     self.n_envs = n_envs
+#     self.first_done_idx = [-1]*n_envs
+#     self.reset(capacity_per_env)
+
+#   # TODO: add function to flush data, keeping partial rollouts that were unused in last update
+
+#   def reset(self, capacity):
+#     if capacity is None:
+#       capacity = self.capacity_per_env
+#     # TODO: consider using tensors directly for fast data flushing
+#     self.memory = [deque(maxlen=capacity) for _ in range(self.n_envs)]
+
+#   def update(self, env_idx, transition):
+#     if transition.done:
+#       if self.first_done_idx[env_idx] == -1:
+#         self.first_done_idx[env_idx] = len(self.memory[env_idx])
+#     self.memory[env_idx].append(transition)  # pop from left if full
+
+#   def sample(self, batch_size):
+#     length = len(self.memory[0])
+#     indices = np.arange(length)
+#     return [[self.memory[env_idx][i] for i in indices] for env_idx in range(self.n_envs)]
+
+#   def __len__(self):
+#     return len(self.memory[0])  # all envs have the same length
+
 class RolloutMemory(object):
-  def __init__(self, capacity, seed, n_envs=1):
+  def __init__(self, capacity, seed, n_envs=1, obsrv_dim=1, action_keys=[], action_dims=[]):
     capacity_per_env = capacity // n_envs
     self.capacity = capacity
     self.capacity_per_env = capacity_per_env
     self.seed = seed
-    self.rng = np.random.default_rng(seed=self.seed)
     self.n_envs = n_envs
-    self.first_done_idx = [-1]*n_envs
+    self.obsrv_dim = obsrv_dim
+    self.action_keys = action_keys
+    self.action_dims = action_dims
     self.reset(capacity_per_env)
-
-  # TODO: add function to flush data, keeping partial rollouts that were unused in last update
 
   def reset(self, capacity):
     if capacity is None:
       capacity = self.capacity_per_env
-    # TODO: consider using tensors directly for fast data flushing
-    self.memory = [deque(maxlen=capacity) for _ in range(self.n_envs)]
+    self.reward = th.zeros((self.n_envs, capacity), dtype=th.float32)
+    self.done = th.zeros((self.n_envs, capacity), dtype=th.bool)
+    self.obsrv = th.zeros((self.n_envs, capacity, self.obsrv_dim), dtype=th.float32)
+    self.obsrv_nxt = th.zeros((self.n_envs, capacity, self.obsrv_dim), dtype=th.float32)
+    self.action = {k: th.zeros((self.n_envs, capacity, d), dtype=th.float32) for k, d in zip(self.action_keys, self.action_dims)}
+    self.l_x = th.zeros((self.n_envs, capacity), dtype=th.float32)
+    self.g_x = th.zeros((self.n_envs, capacity), dtype=th.float32)
+
+    self.idx = th.zeros(self.n_envs, dtype=int)
+    self.first_done_idx = th.full((self.n_envs,), -1)
 
   def update(self, env_idx, transition):
+    idx = self.idx[env_idx]
+    # don't update if idx is already at the end
+    if idx >= self.capacity_per_env:
+      return
+    self.reward[env_idx, idx] = transition.r
+    if type(transition.done) == np.bool_:
+      self.done[env_idx, idx] = transition.done.item()
+    else:
+      self.done[env_idx, idx] = transition.done
+    self.obsrv[env_idx, idx] = transition.s
+    self.obsrv_nxt[env_idx, idx] = transition.s_
+    for k, v in transition.a.items():
+      self.action[k][env_idx, idx] = v
+    self.l_x[env_idx, idx] = transition.info['l_x']
+    self.g_x[env_idx, idx] = transition.info['g_x']
+    
+    self.idx[env_idx] += 1
     if transition.done:
       if self.first_done_idx[env_idx] == -1:
-        self.first_done_idx[env_idx] = len(self.memory[env_idx])
-    self.memory[env_idx].append(transition)  # pop from left if full
+        self.first_done_idx[env_idx] = idx
 
-  def sample(self, batch_size):
-    length = len(self.memory[0])
-    indices = np.arange(length)
-    return [[self.memory[env_idx][i] for i in indices] for env_idx in range(self.n_envs)]
+  def process_data(self, device):
+    obsrv = self.obsrv.to(device)
+    obsrv_nxt = self.obsrv_nxt.to(device)
+    reward = self.reward.to(device)
+    done = self.done.to(device)
+    action = {k: v.to(device) for k, v in self.action.items()}
+    l_x = self.l_x.to(device)
+    g_x = self.g_x.to(device)
+    first_done_idx = self.first_done_idx.to(device)
+    info = {'l_x': l_x, 'g_x': g_x, 'first_done_idx': first_done_idx}
+    return obsrv, action, reward, obsrv_nxt, done, action, info
 
   def __len__(self):
-    return len(self.memory[0])  # all envs have the same length
+    return len(self.obsrv[0])  # all envs have the same length
