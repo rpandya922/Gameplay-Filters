@@ -37,10 +37,11 @@ solver:
   gae_lam: 0.95
   eps_clip: 0.2
   entropy_coef: 0.05
+  n_minibatch: 4
   # == end of PPO hyperparameters ==
   device: cpu
   rollout_env_device: cpu
-  num_envs: 1
+  num_envs: 2
   num_actors: 2
   num_critics: 1
   rollout_horizon: 128

@@ -328,10 +328,9 @@ class PPOActor(Actor):
   def evaluate(self):
     pass
 
-  def update(self, v : torch.Tensor, advantages: torch.Tensor, log_prob: torch.Tensor, n_update_epoch: int,
-              obsrv: torch.Tensor, actions: torch.Tensor, g_x: torch.Tensor, l_x: torch.Tensor,
-              gamma: float, gae_lam: float, non_final_mask: torch.Tensor, eps_clip: float,
-              entropy_coef: float
+  def update(self, advantages: torch.Tensor, log_prob: torch.Tensor, n_update_epoch: int,
+              obsrv: torch.Tensor, actions: torch.Tensor, eps_clip: float,
+              entropy_coef: float, minibatch_size: int
              ) -> Tuple[float]:
     """Updates actor network with values (policy gradient).
 
@@ -346,58 +345,62 @@ class PPOActor(Actor):
     Returns:
         Tuple[float]: _description_
     """
-    buffer_size = obsrv.shape[0]-1
 
     # save old policy data
     old_obsrv = obsrv.detach()
     old_actions = actions.detach()
     old_log_probs = log_prob.detach()
-    old_values = v.detach()
 
     if self.actor_type == "min":
       pass
     elif self.actor_type == "max":
       advantages = -advantages
 
-    # normalize advantages
-    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-    advantages = torch.unsqueeze(advantages, 1)
+    n_minibatch = obsrv.size(0) // minibatch_size
 
-    import ipdb; ipdb.set_trace()
-
-    # TODO: sample minibatches here instead of doing full batch updates
-    # run PPO update for n_update_epoch steps
+    # run PPO update on data n_update_epoch times 
     for epoch in range(n_update_epoch):
-      # evaluate old actions with current updated policy
-      log_probs, dist_entropy = self.net.evaluate(old_obsrv, old_actions)
+      for batch in range(n_minibatch):  
+        # sample minibatch
+        indices = torch.randint(0, obsrv.size(0), (minibatch_size,))
+        obsrv = old_obsrv[indices]
+        actions = old_actions[indices]
+        adv = advantages[indices]
+        # normalize advantages at mini-batch level
+        adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+        old_log_probs_batch = old_log_probs[indices]
 
-      # ratios of new and old policies
-      ratios = torch.exp(log_probs - old_log_probs)
-      
-      # TODO: include other loss terms (particularly KL loss with discrete actions)
+        # evaluate old actions with current updated policy
+        log_probs, dist_entropy = self.net.evaluate(obsrv, actions)
 
-      loss1 = ratios * advantages
-      # clipped surrogate loss
-      loss2 = torch.clamp(ratios, 1.0 - eps_clip, 1.0 + eps_clip) * advantages
+        # ratios of new and old policies
+        ratios = torch.exp(log_probs - old_log_probs_batch)
+        
+        # TODO: include other loss terms (particularly KL loss with discrete actions)
 
-      loss_clip = -torch.min(loss1, loss2)
+        loss1 = ratios * adv
+        # clipped surrogate loss
+        loss2 = torch.clamp(ratios, 1.0 - eps_clip, 1.0 + eps_clip) * adv
 
-      # compute entropy bonus term
-      entropy_bonus = -entropy_coef*dist_entropy
+        loss_clip = -torch.min(loss1, loss2)
 
-      loss_clip_ = loss_clip.mean().item()
-      print(f"{self.actor_type} epoch {epoch}: {loss_clip.mean().item()}, {entropy_bonus.mean().item()}")
-      if loss_clip_ == float('inf') or loss_clip_ == float('-inf') or loss_clip_ == float('nan'):
-        import ipdb; ipdb.set_trace()
-      loss = loss_clip + entropy_bonus
-      loss = loss.mean()
-      # import ipdb; ipdb.set_trace()
-      # take gradient step
-      self.optimizer.zero_grad()
-      loss.backward()
-      # clip gradients
-      torch.nn.utils.clip_grad_norm_(self.net.parameters(), 0.5)
-      self.optimizer.step()
+        # compute entropy bonus term
+        entropy_bonus = -entropy_coef*dist_entropy
+
+        # for debugging nan's
+        # loss_clip_ = loss_clip.mean().item()
+        # print(f"{self.actor_type} epoch {epoch} batch {batch}: {loss_clip.mean().item()}, {entropy_bonus.mean().item()}")
+        # if loss_clip_ == float('inf') or loss_clip_ == float('-inf') or loss_clip_ == float('nan'):
+        #   import ipdb; ipdb.set_trace()
+
+        loss = loss_clip + entropy_bonus
+        loss = loss.mean()
+        # take gradient step
+        self.optimizer.zero_grad()
+        loss.backward()
+        # clip gradients
+        torch.nn.utils.clip_grad_norm_(self.net.parameters(), 0.5)
+        self.optimizer.step()
 
     return loss.item(), dist_entropy.mean().item()
   

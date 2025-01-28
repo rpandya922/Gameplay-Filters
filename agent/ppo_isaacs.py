@@ -82,6 +82,7 @@ class PPOISAACS(BaseTraining):
     self.eps_clip = float(cfg_solver.eps_clip) # PPO clip parameter for actor loss
     self.entropy_coef = float(cfg_solver.entropy_coef) # entropy coefficient for actor loss
     self.obsrv_dim = int(cfg_solver.obs_dim)
+    self.n_minibatch = int(cfg_solver.n_minibatch)
 
     # Copy ckpts from previous stages.
     if cfg_arch.actor_0.pretrained_path is not None:
@@ -177,33 +178,6 @@ class PPOISAACS(BaseTraining):
   def store_transition(self, env_idx, *args):
     self.memory.update(env_idx, self.transition_cls(*args))
 
-  def compute_advantages(self, batch, buffer_size: int, values: torch.Tensor, gamma: float, gae_lam: float):
-    # compute advantages and modify batch in-place
-    # save old policy data
-    # old_obsrv = batch.obsrv.detach()
-    # old_actions = batch.actions.detach()
-    old_values = values.detach()
-    g_x = batch.info['g_x']
-    l_x = batch.info['l_x']
-    non_final_mask = batch.non_final_mask
-    rewards = torch.min(g_x, l_x)
-
-    advantages = torch.zeros_like(rewards).to(rewards)
-    last_adv = 0
-    # TODO: do we need one extra value for the last state so we can compute the last advantage properly?
-    last_value = old_values[buffer_size]
-    for i in range(buffer_size, -1, -1):
-      mask = non_final_mask[i].logical_not()
-      last_value = last_value * mask
-      last_adv = last_adv * mask
-
-      delta = rewards[i] + gamma*last_value - old_values[i]
-      last_adv = delta + gamma*gae_lam*last_adv
-      advantages[i] = last_adv
-      last_value = old_values[i]
-    
-    return advantages
-
   def interact(
       self, rollout_env: Union[BaseZeroSumEnv, VecEnvBase], obsrv_all: torch.Tensor, action_all: List[Dict[str,
                                                                                                            np.ndarray]]
@@ -260,36 +234,26 @@ class PPOISAACS(BaseTraining):
     self.ctrl.net.eval()
     self.dstb.net.eval()
 
-    b_obsrv, b_action, b_reward, b_obsrv_nxt, b_done, b_action, b_info = memory.process_data(self.device)
+    b_obsrv, b_action, b_reward, b_obsrv_nxt, b_done, b_info = memory.process_data(self.device)
     values = self.critic.net(b_obsrv)
-    # TODO: write a new compute_advantages function that can handle data not from batch object
-    import ipdb; ipdb.set_trace()
+    advantages = memory.compute_advantages(
+      values=values, reward=b_reward, done=b_done, gamma=self.critic.gamma, gae_lam=self.gae_lam, device=self.device
+    )
+    # reshape everything to be (n_envs * buffer_size, ...)
+    b_obsrv = b_obsrv.view(-1, *b_obsrv.shape[2:])
+    b_action = {k: v.view(-1, *v.shape[2:]) for k, v in b_action.items()}
+    b_reward = b_reward.view(-1)
+    b_obsrv_nxt = b_obsrv_nxt.view(-1, *b_obsrv_nxt.shape[2:])
+    b_done = b_done.view(-1)
+    b_info = {k: v.view(-1) for k, v in b_info.items()}
 
-    # process memory and compute advantages for each env
-    batches = [Batch(memory.memory[env_idx], device=self.device) for env_idx in range(self.num_envs)]
-    values = [self.critic.net(batch.obsrv) for batch in batches]
-    for env_idx in range(self.num_envs):
-      b = batches[env_idx]
-      b.info["adv"] = self.compute_advantages(
-        b, memory.first_done_idx[env_idx], values[env_idx], self.critic.gamma, self.gae_lam
-      )
-    # merge all batches now that advantages are computed
-    batch = Batch.concat(batches, memory.first_done_idx)
+    batch = Batch([], self.device, tensors=(b_obsrv, b_action, b_reward, b_obsrv_nxt, b_done, b_info))
+    batch.info['adv'] = advantages.view(-1, *advantages.shape[2:]).detach()
 
     ctrl_action = batch.action['ctrl']
     dstb_action = batch.action['dstb']
 
-    # with torch.no_grad():
-    #   ctrl_action_nxt, _ = self.ctrl.sample(batch.non_final_obsrv_nxt)
-    #   dstb_action_nxt, _ = self.dstb.sample(
-    #       batch.non_final_obsrv_nxt, agents_action={"ctrl": ctrl_action_nxt.cpu().numpy()}
-    #   )
-    # action = self.combine_action(ctrl_action, dstb_action)
-    # action_nxt = self.combine_action(ctrl_action_nxt, dstb_action_nxt)
-
-    # TODO: decide how to properly compute advantages. maybe the easiest is to append all env batches on new dimension, compute advantages per dimension, then flatten them 
-    v = self.critic.net(batch.obsrv)  # Gets V(s)
-    # TODO: find out why batch.non_final_obsrv_nxt is not the right shape after using rollout memory
+    v = values.view(-1, *values.shape[2:])
     v_nxt = self.critic.net(batch.non_final_obsrv_nxt)  # Gets V(s') 
     # TODO: what is the correct usage of entropy motives in zero-sum games?
     loss_v = self.critic.update(
@@ -297,9 +261,10 @@ class PPOISAACS(BaseTraining):
       l_x=batch.info['l_x'], binary_cost=batch.info['binary_cost'], entropy_motives=0
     )
 
+    update_either = False
     # Updates the ctrl actor.
     if update_ctrl and timer % self.ctrl.update_period == 0:
-    # if True: # TODO: remove after implementing ctrl/dstb updates
+      update_either = True
       # if self.cnt_step < self.warmup_steps:
       #   update_alpha = False
       # else:
@@ -307,19 +272,11 @@ class PPOISAACS(BaseTraining):
       self.ctrl.net.train()
       self.dstb.net.eval()
       self.critic.net.eval()
-      # ctrl_action_sample, log_prob = self.ctrl.sample(obsrv=batch.obsrv)
-      # with torch.no_grad():
-      #   if self.dstb.obsrv_list is None:
-      #     dstb_action_aux = self.dstb.net(batch.obsrv)
-      #   else:
-      #     dstb_action_aux = self.dstb.net(batch.obsrv, action=ctrl_action_sample)
-      # action_sample = self.combine_action(ctrl_action_sample, dstb_action_aux)
       log_prob, _ = self.ctrl.net.evaluate(batch.obsrv, ctrl_action)
       loss_ctrl, loss_ent_ctrl = self.ctrl.update(
-        v=v, advantages=batch.info['adv'], log_prob=log_prob, n_update_epoch=self.n_update_epoch, obsrv=batch.obsrv,
-        actions=ctrl_action, g_x=batch.info['g_x'], l_x=batch.info['l_x'], gamma=self.critic.gamma,
-        gae_lam=self.gae_lam, non_final_mask=batch.non_final_mask, eps_clip=self.eps_clip,
-        entropy_coef=self.entropy_coef
+        advantages=batch.info['adv'], log_prob=log_prob, n_update_epoch=self.n_update_epoch, obsrv=batch.obsrv,
+        actions=ctrl_action, eps_clip=self.eps_clip, entropy_coef=self.entropy_coef, 
+        minibatch_size=(memory.capacity // self.n_minibatch)
       )
       loss_alpha_ctrl = 0.
     else:
@@ -327,6 +284,7 @@ class PPOISAACS(BaseTraining):
 
     # Updates the dstb actor.
     if update_dstb and timer % self.dstb.update_period == 0:
+      update_either = True
       # if self.cnt_step < self.warmup_steps:
       #   update_alpha = False
       # else:
@@ -334,34 +292,22 @@ class PPOISAACS(BaseTraining):
       self.dstb.net.train()
       self.ctrl.net.eval()
       self.critic.net.eval()
-      # with torch.no_grad():
-      #   ctrl_action_aux = self.ctrl.net(batch.obsrv)
-      # if self.dstb.obsrv_list is None:
-      #   dstb_action_sample, log_prob = self.dstb.net.sample(obsrv=batch.obsrv)
-      # else:
-      #   dstb_action_sample, log_prob = self.dstb.net.sample(obsrv=batch.obsrv, action=ctrl_action_aux)
-      # action_sample = self.combine_action(ctrl_action_aux, dstb_action_sample)
-
-      # q1_sample, q2_sample = self.critic.net(batch.obsrv, action_sample)
-      # loss_dstb, loss_ent_dstb, loss_alpha_dstb = self.dstb.update(
-      #     q1=q1_sample, q2=q2_sample, log_prob=log_prob, update_alpha=update_alpha
-      # )
-      log_prob, _ = self.dstb.net.evaluate(batch.obsrv, ctrl_action)
-      try:
-        loss_dstb, loss_ent_dstb = self.dstb.update(
-            v=v, advantages=batch.info['adv'], log_prob=log_prob, n_update_epoch=self.n_update_epoch, obsrv=batch.obsrv,
-            actions=dstb_action, g_x=batch.info['g_x'], l_x=batch.info['l_x'], gamma=self.critic.gamma,
-            gae_lam=self.gae_lam, non_final_mask=batch.non_final_mask, eps_clip=self.eps_clip,
-            entropy_coef=self.entropy_coef
-        )
-      except:
-        import ipdb; ipdb.set_trace()
+      log_prob, _ = self.dstb.net.evaluate(batch.obsrv, dstb_action)
+      loss_dstb, loss_ent_dstb = self.dstb.update(
+          advantages=batch.info['adv'], log_prob=log_prob, n_update_epoch=self.n_update_epoch, obsrv=batch.obsrv,
+          actions=dstb_action, eps_clip=self.eps_clip, entropy_coef=self.entropy_coef, 
+          minibatch_size=(memory.capacity // self.n_minibatch)
+      )
       loss_alpha_dstb = 0.
     else:
       loss_dstb = loss_ent_dstb = loss_alpha_dstb = 0.
 
     # if timer % self.critic.update_target_period == 0:  # Updates the target networks.
     #   self.critic.update_target()
+
+    # flush memory after updating either actor
+    if update_either:
+      memory.reset(None)
 
     self.critic.net.eval()
     self.ctrl.net.eval()
@@ -387,25 +333,13 @@ class PPOISAACS(BaseTraining):
       loss_alpha_dstb_all = []
 
       for timer in range(self.num_updates_per_opt):
-        # sample = True
-        # cnt = 0
-        # while sample:
-        #   batch = self.sample_batch()
-        #   sample = torch.logical_not(torch.any(batch.non_final_mask))
-        #   cnt += 1
-        #   if cnt >= 10:
-        #     break
-        # if sample:
-        #   warnings.warn("Cannot get a valid batch!!", UserWarning)
-        #   continue
-        # pass full memory into update, minibatches sampled inside update fns.
-        batch = self.memory 
 
         loss_q, loss_ctrl, loss_ent_ctrl, loss_alpha_ctrl, loss_dstb, loss_ent_dstb, loss_alpha_dstb = self.update_one(
-            batch, timer, update_ctrl=update_ctrl
+            self.memory, timer, update_ctrl=update_ctrl
         )
+        # TODO: should we flush here or only after updating either actor? 
         # flush memory after updating
-        self.memory.reset(None)
+        # self.memory.reset(None)
 
         loss_q_all.append(loss_q)
         if update_ctrl and timer % self.ctrl.update_period == 0:

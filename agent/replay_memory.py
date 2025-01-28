@@ -25,8 +25,11 @@ Transition = namedtuple('Transition', ['s', 'a', 'r', 's_', 'done', 'info'])
 
 class Batch(object):
 
-  def __init__(self, transitions: List[Transition], device: th.device):
+  def __init__(self, transitions: List[Transition], device: th.device, tensors=None):
     self.device = device
+    if tensors is not None:
+      self.load_tensors(*tensors)
+      return
     batch = Transition(*zip(*transitions))
 
     # Reward and Done.
@@ -50,20 +53,28 @@ class Batch(object):
     if 'append' in self.info:
       self.info['non_final_append_nxt'] = (batch.info['append_nxt'][self.non_final_mask])
 
-  @staticmethod
-  def concat(batches: List['Batch'], first_done_idxs: List[int]):
-    # concatenates all batches (reward, done, obsrv, action, info) into one (but only up to the first done index per batch)
-    # `first_done_idxs` is a list of the first done index for each batch.
-    first_done_idxs = [x+1 if x != -1 else x for x in first_done_idxs]
-    b0 = batches[0]
-    b0.reward = th.cat([b.reward[:first_done_idx] for b, first_done_idx in zip(batches, first_done_idxs)])
-    b0.non_final_mask = th.cat([b.non_final_mask[:first_done_idx] for b, first_done_idx in zip(batches, first_done_idxs)])
-    b0.non_final_obsrv_nxt = th.cat([b.non_final_obsrv_nxt[:first_done_idx] for b, first_done_idx in zip(batches, first_done_idxs)])
-    b0.obsrv = th.cat([b.obsrv[:first_done_idx] for b, first_done_idx in zip(batches, first_done_idxs)])
-    b0.action = {key: th.cat([b.action[key][:first_done_idx] for b, first_done_idx in zip(batches, first_done_idxs)]) for key in b0.action.keys()}
-    b0.info = {key: th.cat([b.info[key][:first_done_idx] for b, first_done_idx in zip(batches, first_done_idxs)]) for key in b0.info.keys()}
+  def load_tensors(self, obsrv, action, reward, obsrv_nxt, done, info):
+    self.reward = reward
+    self.non_final_mask = done.logical_not()
+    self.non_final_obsrv_nxt = obsrv_nxt[self.non_final_mask]
+    self.obsrv = obsrv
+    self.action = action
+    self.info = info
+
+  # @staticmethod
+  # def concat(batches: List['Batch'], first_done_idxs: List[int]):
+  #   # concatenates all batches (reward, done, obsrv, action, info) into one (but only up to the first done index per batch)
+  #   # `first_done_idxs` is a list of the first done index for each batch.
+  #   first_done_idxs = [x+1 if x != -1 else x for x in first_done_idxs]
+  #   b0 = batches[0]
+  #   b0.reward = th.cat([b.reward[:first_done_idx] for b, first_done_idx in zip(batches, first_done_idxs)])
+  #   b0.non_final_mask = th.cat([b.non_final_mask[:first_done_idx] for b, first_done_idx in zip(batches, first_done_idxs)])
+  #   b0.non_final_obsrv_nxt = th.cat([b.non_final_obsrv_nxt[:first_done_idx] for b, first_done_idx in zip(batches, first_done_idxs)])
+  #   b0.obsrv = th.cat([b.obsrv[:first_done_idx] for b, first_done_idx in zip(batches, first_done_idxs)])
+  #   b0.action = {key: th.cat([b.action[key][:first_done_idx] for b, first_done_idx in zip(batches, first_done_idxs)]) for key in b0.action.keys()}
+  #   b0.info = {key: th.cat([b.info[key][:first_done_idx] for b, first_done_idx in zip(batches, first_done_idxs)]) for key in b0.info.keys()}
     
-    return b0
+  #   return b0
 
 class ReplayMemory(object):
 
@@ -150,9 +161,10 @@ class RolloutMemory(object):
     self.action = {k: th.zeros((self.n_envs, capacity, d), dtype=th.float32) for k, d in zip(self.action_keys, self.action_dims)}
     self.l_x = th.zeros((self.n_envs, capacity), dtype=th.float32)
     self.g_x = th.zeros((self.n_envs, capacity), dtype=th.float32)
+    self.binary_cost = th.zeros((self.n_envs, capacity), dtype=th.float32)
+    self.action_clip = {k: th.zeros((self.n_envs, capacity, d), dtype=th.float32) for k, d in zip(self.action_keys, self.action_dims)}
 
     self.idx = th.zeros(self.n_envs, dtype=int)
-    self.first_done_idx = th.full((self.n_envs,), -1)
 
   def update(self, env_idx, transition):
     idx = self.idx[env_idx]
@@ -170,11 +182,11 @@ class RolloutMemory(object):
       self.action[k][env_idx, idx] = v
     self.l_x[env_idx, idx] = transition.info['l_x']
     self.g_x[env_idx, idx] = transition.info['g_x']
+    self.binary_cost[env_idx, idx] = transition.info['binary_cost']
+    self.action_clip['ctrl'][env_idx, idx] = th.from_numpy(transition.info['ctrl_clip'])
+    self.action_clip['dstb'][env_idx, idx] = th.from_numpy(transition.info['dstb_clip'])
     
     self.idx[env_idx] += 1
-    if transition.done:
-      if self.first_done_idx[env_idx] == -1:
-        self.first_done_idx[env_idx] = idx
 
   def process_data(self, device):
     obsrv = self.obsrv.to(device)
@@ -184,9 +196,30 @@ class RolloutMemory(object):
     action = {k: v.to(device) for k, v in self.action.items()}
     l_x = self.l_x.to(device)
     g_x = self.g_x.to(device)
-    first_done_idx = self.first_done_idx.to(device)
-    info = {'l_x': l_x, 'g_x': g_x, 'first_done_idx': first_done_idx}
-    return obsrv, action, reward, obsrv_nxt, done, action, info
+    binary_cost = self.binary_cost.to(device)
+    action_clip = {k: v.to(device) for k, v in self.action_clip.items()}
+    info = {'l_x': l_x, 'g_x': g_x, 'binary_cost': binary_cost, 'ctrl_clip': action_clip['ctrl'], 'dstb_clip': action_clip['dstb']}
+    return obsrv, action, reward, obsrv_nxt, done, info
+
+  def compute_advantages(self, values, reward, done, gamma, gae_lam, device):
+    # compute advantages
+    reward = reward.unsqueeze(-1)
+    done = done.unsqueeze(-1)
+    advantages = th.zeros_like(reward)
+    # returns = th.zeros_like(reward)
+    last_gae = 0
+    last_values = values[:,-1].detach()
+    for t in reversed(range(reward.size(1))):
+      if t == reward.size(1) - 1:
+        mask = done[:,-1].logical_not()
+        next_values = last_values
+      else:
+        mask = done[:, t+1].logical_not() # done -> 0, not done -> 1
+        next_values = values[:, t+1]
+      delta = reward[:, t] + gamma * next_values * mask - values[:, t]
+      advantages[:, t] = last_gae = delta + gamma * gae_lam * mask * last_gae
+    # returns = advantages + values
+    return advantages
 
   def __len__(self):
     return len(self.obsrv[0])  # all envs have the same length
