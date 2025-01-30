@@ -388,10 +388,10 @@ class PPOActor(Actor):
         entropy_bonus = -entropy_coef*dist_entropy
 
         # for debugging nan's
-        # loss_clip_ = loss_clip.mean().item()
+        loss_clip_ = loss_clip.mean().item()
         # print(f"{self.actor_type} epoch {epoch} batch {batch}: {loss_clip.mean().item()}, {entropy_bonus.mean().item()}")
-        # if loss_clip_ == float('inf') or loss_clip_ == float('-inf') or loss_clip_ == float('nan'):
-        #   import ipdb; ipdb.set_trace()
+        if loss_clip_ == float('inf') or loss_clip_ == float('-inf') or loss_clip_ == float('nan'):
+          import ipdb; ipdb.set_trace()
 
         loss = loss_clip + entropy_bonus
         loss = loss.mean()
@@ -601,3 +601,5 @@ class PPOCritic(Critic):
     self.optimizer.step()
     return loss_v.item()
       
+  def restore(self, step: int, model_folder: str, verbose: bool = True):
+    BaseBlock.restore(self, step, model_folder, verbose=verbose)

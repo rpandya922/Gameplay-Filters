@@ -1,23 +1,24 @@
 environment:
   seed: 0
-  timeout: 300
-  end_criterion: failure
+  timeout: 150
+  end_criterion: reach-avoid
 
 agent:
   agent_id: ego
   dyn: Pendulum
+  gui: false
   footprint: null
   verbose: false
   dt: 0.05
-  max_speed: 8.0
+  max_speed: 3.0
   envtype: normal
   discretize_actions: false
   n_discrete_actions: 16
   action_range: 
     ctrl: &ctrl_range
-      - [-2.0, 2.0]
+      - [-8.0, 8.0]
     dstb: &dstb_range
-      - [-1.0, 1.0]
+      - [-0.1, 0.1]
   target_margin:
     - theta
     - theta_dot
@@ -28,26 +29,26 @@ agent:
   obsrv_list: &obsrv_list
     ctrl: null
     dstb: null
-  reset_criterion: failure
+  reset_criterion: reach-avoid
 
 solver:
   algorithm: PPO
   # == PPO hyperparameters ==
-  n_update_epoch: 10
+  n_update_epoch: 5
   gae_lam: 0.95
   eps_clip: 0.2
   entropy_coef: 0.05
   n_minibatch: 4
   # == end of PPO hyperparameters ==
-  device: cpu
+  device: cuda:1
   rollout_env_device: cpu
-  num_envs: 2
+  num_envs: 16
   num_actors: 2
   num_critics: 1
   rollout_horizon: 128
   # == hyperparameters of learning ==
-  max_steps: 20_000
-  opt_period: 2048
+  max_steps: 2_000_000
+  opt_period: 4096
   num_updates_per_opt: 1 # 1_000
   eval_period: 10_000
   min_steps_b4_opt: 10_000
@@ -57,23 +58,23 @@ solver:
   warmup_action_range:
     ctrl: *ctrl_range
     dstb: *dstb_range
-  memory_capacity: 2048
+  memory_capacity: 4096
   softmax_rationality: 3.0
   # == logging ==
-  use_wandb: false
-  project_name: gameplay-release
-  name: isaacs_pend
+  use_wandb: true
+  project_name: ppo_isaacs_pendulum
+  name: v0
   max_model: 20
   save_top_k:
     ctrl: 10
     dstb: 10
-  out_folder: train_result/isaacs_pend
+  out_folder: train_result/ppo_isaacs_pendulum/v0
   eval:   
     b4_learn: true
     metric: reach-avoid
     aux_metric: [ep_length, safety]
-    num_trajectories: 100
-    timeout: 300
+    num_trajectories: 50
+    timeout: 150
     end_criterion: reach-avoid
   obs_dim: 3
   obsrv_list:  *obsrv_list
@@ -177,4 +178,4 @@ eval:
   model_type: [highest, highest] # [ctrl, dstb], highest, safest, worst, manual
   step: [0, 0] # [ctrl, dstb], the step to use if "manual" is chosen for MODEL_TYPE
   eval_timeout: 1000 # how long do we evaluate in real rollout env
-  imaginary_horizon: 300 # the horizon of the imaginary env
+  imaginary_horizon: 150 # the horizon of the imaginary env

@@ -247,11 +247,24 @@ class GaussianPolicy(nn.Module):
     log_std = torch.clamp(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
 
     std = torch.exp(log_std)
+    # mean = torch.tanh(mean) * self.scale + self.bias
     normalRV = Normal(mean, std)
 
-    x = (action_eval - self.bias) / self.scale
+    y = (action_eval - self.bias) / self.scale
 
+    # referencing stable baselines 3 version of log prob for this https://github.com/DLR-RM/stable-baselines3/blob/master/stable_baselines3/common/distributions.py#227
+
+    # clamp between -1 + eps and 1 - eps (domain of atanh)
+    y = torch.clamp(y, -1 + self.eps, 1 - self.eps)
+    # compute ahtanh(y)
+    x = 0.5 * (y.log1p() - (-y).log1p())
+    
+    # Calculate log prob of x (not y!)
     log_prob = normalRV.log_prob(x)
+    
+    # Apply transformation adjustment 
+    log_prob -= torch.log(self.scale * (1 - y.pow(2)) + self.eps)
+
     if log_prob.dim() > 1:
       log_prob = log_prob.sum(1, keepdim=True)
     else:

@@ -306,8 +306,8 @@ class PPOISAACS(BaseTraining):
     #   self.critic.update_target()
 
     # flush memory after updating either actor
-    if update_either:
-      memory.reset(None)
+    # if update_either:
+    #   memory.reset(None)
 
     self.critic.net.eval()
     self.ctrl.net.eval()
@@ -339,7 +339,7 @@ class PPOISAACS(BaseTraining):
         )
         # TODO: should we flush here or only after updating either actor? 
         # flush memory after updating
-        # self.memory.reset(None)
+        self.memory.reset(None)
 
         loss_q_all.append(loss_q)
         if update_ctrl and timer % self.ctrl.update_period == 0:

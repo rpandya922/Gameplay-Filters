@@ -10,7 +10,7 @@ import os
 import copy
 import argparse
 from omegaconf import OmegaConf
-from agent import ISAACS
+from agent import ISAACS, PPOISAACS
 from utils.utils import get_model_index
 
 
@@ -33,6 +33,9 @@ def main(args):
     from simulators import Go2PybulletZeroSumEnv
     env_class = Go2PybulletZeroSumEnv
     import pybullet as p
+  elif cfg.agent.dyn == "Pendulum":
+    from simulators import PendulumZeroSumEnv
+    env_class = PendulumZeroSumEnv
   else:
     raise ValueError("Dynamics type not supported!")
 
@@ -47,7 +50,10 @@ def main(args):
 
   # Constructs solver.
   print("\n== Solver information ==")
-  solver = ISAACS(cfg.solver, cfg.arch, cfg.environment.seed)
+  if hasattr(cfg.solver, "algorithm") and cfg.solver.algorithm == "PPO":
+    solver = PPOISAACS(cfg.solver, cfg.arch, cfg.environment.seed)
+  else:
+    solver = ISAACS(cfg.solver, cfg.arch, cfg.environment.seed)
   env.agent.policy = copy.deepcopy(solver.ctrl)
   print('#params in ctrl: {}'.format(sum(p.numel() for p in solver.ctrl.net.parameters() if p.requires_grad)))
   print('#params in dstb: {}'.format(sum(p.numel() for p in solver.dstb.net.parameters() if p.requires_grad)))
@@ -88,10 +94,11 @@ def main(args):
     d = solver.dstb.net(*s_dstb)
     # critic_q = max(solver.critic.net(s.float().to(solver.device), solver.combine_action(u, d)))
     # print("\r{}".format(critic_q), end="")
-    a = {'ctrl': u.detach().numpy(), 'dstb': d.detach().numpy()}
+    a = {'ctrl': u.detach().cpu().numpy(), 'dstb': d.detach().cpu().numpy()}
     s_, r, done, info = env.step(a, cast_torch=True)
     s = s_
     if done:
+      print("Done")
       if "Pybullet" in cfg.agent.dyn:
         if p.getKeyboardEvents().get(49):
           continue
